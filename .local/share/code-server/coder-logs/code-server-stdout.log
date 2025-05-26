@@ -1,0 +1,15 @@
+[2025-05-26T12:21:39.521Z] info  code-server 4.7.0 7f108c61ab670ccaae4cfde5de2909c003db1ce8
+[2025-05-26T12:21:39.522Z] info  Using user-data-dir ~/.local/share/code-server
+[2025-05-26T12:21:39.535Z] info  Using config file ~/.config/code-server/config.yaml
+[2025-05-26T12:21:39.535Z] info  HTTP server listening on http://0.0.0.0:8080/ 
+[2025-05-26T12:21:39.535Z] info    - Authentication is disabled 
+[2025-05-26T12:21:39.535Z] info    - Not serving HTTPS 
+[20:22:40] Extension host agent started.
+[20:22:43] [173.8.125.0][6cd8de6c][ManagementConnection] New connection established.
+[20:22:44] [173.8.125.0][e87ff36c][ExtensionHostConnection] New connection established.
+[20:22:44] [173.8.125.0][e87ff36c][ExtensionHostConnection] <91> Launched Extension Host Process.
+[20:23:00] [173.8.125.0][6cd8de6c][ManagementConnection] The client has disconnected gracefully, so the connection will be disposed.
+[20:23:00] [173.8.125.0][e87ff36c][ExtensionHostConnection] <91> Extension Host Process exited with code: 0, signal: null.
+[20:23:01] [173.8.125.0][dfe9cdf7][ManagementConnection] New connection established.
+[20:23:01] [173.8.125.0][80de559c][ExtensionHostConnection] New connection established.
+[20:23:01] [173.8.125.0][80de559c][ExtensionHostConnection] <117> Launched Extension Host Process.

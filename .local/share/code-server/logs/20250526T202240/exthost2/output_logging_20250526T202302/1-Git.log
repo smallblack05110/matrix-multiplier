@@ -1,0 +1,43 @@
+[2025-05-26T12:23:02.644Z] Log level: Info
+[2025-05-26T12:23:02.651Z] [info] Validating found git in: git
+[2025-05-26T12:23:02.687Z] [info] Using git 2.25.1 from git
+[2025-05-26T12:23:02.734Z] > git rev-parse --show-toplevel [33ms]
+[2025-05-26T12:23:02.734Z] fatal: not a git repository (or any of the parent directories): .git
+[2025-05-26T12:23:02.744Z] > git rev-parse --show-toplevel [2ms]
+[2025-05-26T12:23:02.744Z] fatal: not a git repository (or any of the parent directories): .git
+[2025-05-26T12:23:02.749Z] > git rev-parse --show-toplevel [1ms]
+[2025-05-26T12:23:02.749Z] fatal: not a git repository (or any of the parent directories): .git
+[2025-05-26T12:23:02.758Z] > git rev-parse --show-toplevel [5ms]
+[2025-05-26T12:23:02.758Z] fatal: not a git repository (or any of the parent directories): .git
+[2025-05-26T12:23:02.763Z] > git rev-parse --show-toplevel [1ms]
+[2025-05-26T12:23:02.764Z] fatal: not a git repository (or any of the parent directories): .git
+[2025-05-26T12:23:02.769Z] > git rev-parse --show-toplevel [2ms]
+[2025-05-26T12:23:02.769Z] fatal: not a git repository (or any of the parent directories): .git
+[2025-05-26T12:23:02.782Z] > git rev-parse --show-toplevel [9ms]
+[2025-05-26T12:23:02.782Z] fatal: not a git repository (or any parent up to mount point /root)
+Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).
+[2025-05-26T12:23:02.809Z] > git rev-parse --show-toplevel [22ms]
+[2025-05-26T12:23:02.810Z] fatal: not a git repository (or any of the parent directories): .git
+[2025-05-26T12:24:02.029Z] > git rev-parse --show-toplevel [2ms]
+[2025-05-26T12:24:02.029Z] fatal: not a git repository (or any of the parent directories): .git
+[2025-05-26T12:27:14.186Z] > git init [8ms]
+[2025-05-26T12:27:14.192Z] > git rev-parse --show-toplevel [2ms]
+[2025-05-26T12:27:14.198Z] > git rev-parse --git-dir --git-common-dir [1ms]
+[2025-05-26T12:27:14.208Z] [info] Open repository: /root
+[2025-05-26T12:27:14.224Z] > git status -z -uall [8ms]
+[2025-05-26T12:27:14.230Z] > git symbolic-ref --short HEAD [1ms]
+[2025-05-26T12:27:14.237Z] > git for-each-ref --format=%(refname)%00%(upstream:short)%00%(objectname)%00%(upstream:track)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/master refs/remotes/master [1ms]
+[2025-05-26T12:27:14.247Z] > git for-each-ref --sort -committerdate --format %(refname) %(objectname) %(*objectname) [6ms]
+[2025-05-26T12:27:14.248Z] > git remote --verbose [2ms]
+[2025-05-26T12:27:14.265Z] > git config --get commit.template [2ms]
+[2025-05-26T12:27:14.276Z] > git status -z -uall [6ms]
+[2025-05-26T12:27:14.284Z] > git symbolic-ref --short HEAD [2ms]
+[2025-05-26T12:27:14.304Z] > git for-each-ref --format=%(refname)%00%(upstream:short)%00%(objectname)%00%(upstream:track)%00%(upstream:remotename)%00%(upstream:remoteref) refs/heads/master refs/remotes/master [16ms]
+[2025-05-26T12:27:14.341Z] > git remote --verbose [29ms]
+[2025-05-26T12:27:14.342Z] > git for-each-ref --sort -committerdate --format %(refname) %(objectname) %(*objectname) [34ms]
+[2025-05-26T12:27:14.354Z] > git config --get commit.template [4ms]
+[2025-05-26T12:27:14.750Z] > git show --textconv :mult/mult.cpp [6ms]
+[2025-05-26T12:27:14.751Z] > git ls-files --stage -- /root/mult/mult.cpp [2ms]
+[2025-05-26T12:27:14.920Z] > git check-ignore -v -z --stdin [1ms]
+[2025-05-26T12:27:15.621Z] > git ls-files --stage -- /root/mult/mult.cpp [2ms]
+[2025-05-26T12:27:15.653Z] > git show --textconv :mult/mult.cpp [2ms]

@@ -9,3 +9,6 @@
 [2025-05-26 20:23:02.726] [exthost] [info] ExtensionService#_doActivateExtension vscode.merge-conflict, startup: false, activationEvent: 'onStartupFinished'
 [2025-05-26 20:23:02.732] [exthost] [info] Eager extensions activated
 [2025-05-26 20:24:52.658] [exthost] [info] ExtensionService#_doActivateExtension vscode.github-authentication, startup: false, activationEvent: 'onAuthenticationRequest:github'
+[2025-05-26 20:30:25.710] [exthost] [info] Extension host terminating: received terminate message from renderer
+[2025-05-26 20:30:25.711] [exthost] [info] Lock '/root/.local/share/code-server/User/workspaceStorage/5d18d21d/vscode.lock': Marking the lockfile as scheduled to be released in 6000 ms.
+[2025-05-26 20:30:25.724] [exthost] [info] Extension host with pid 117 exiting with code 0

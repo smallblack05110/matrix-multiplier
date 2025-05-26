@@ -3,10 +3,8 @@
 #include <random>
 #include <cmath>
 #include <algorithm>
-#include <chrono>      // 新增
 #include <omp.h>
 #include <mpi.h>
-
 
 // 编译执行方式参考：
 // 编译， 也可以使用g++，但使用MPI时需使用mpic
@@ -153,6 +151,37 @@ void matmul_mpi(int N, int M, int P)
     }
 }
 
+// 方式4: 其他方式 （主要修改函数）
+void matmul_other(const std::vector<double>& A,const std::vector<double>& B,std::vector<double>& C, int N, int M, int P) 
+{
+    std::cout << "Other methods..." << std::endl;
+    const int unroll_factor = 4;
+
+    for (int i = 0; i < N; ++i) 
+    {
+        for (int j = 0; j < P; ++j) 
+        {
+            double sum = 0;
+            int k = 0;
+
+            for (; k <= M - unroll_factor; k += unroll_factor) 
+            {
+                sum += A[i * M + k]     * B[k * P + j]
+                     + A[i * M + k + 1] * B[(k + 1) * P + j]
+                     + A[i * M + k + 2] * B[(k + 2) * P + j]
+                     + A[i * M + k + 3] * B[(k + 3) * P + j];
+            }
+
+            for (; k < M; ++k) 
+            {
+                sum += A[i * M + k] * B[k * P + j];
+            }
+
+            C[i * P + j] = sum;
+        }
+    }
+}
+
 
 // 方式4: 矩阵转置优化（Other）
 void matmul_other(const std::vector<double>& A,
@@ -188,67 +217,27 @@ int main(int argc, char** argv) {
 
     if (mode == "mpi") {
         MPI_Init(&argc, &argv);
-
-        int rank;
-        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-
-        // 计时开始
-        auto t0 = std::chrono::high_resolution_clock::now();
-
         matmul_mpi(A, B, C, N, M, P);
-
-        // 计时结束
-        auto t1 = std::chrono::high_resolution_clock::now();
-        double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-
-        if (rank == 0) {
-            bool ok = validate(C, C_ref, N, P);
-            std::cout << "[MPI] Valid: " << (ok ? "true" : "false")
-                      << "  Time: " << ms << " ms" << std::endl;
-        }
-
         MPI_Finalize();
+        std::cout << "[MPI] Valid: " << (validate(C, C_ref, N, P) ? "true" : "false") << std::endl;
     }
     else if (mode == "baseline") {
-        auto t0 = std::chrono::high_resolution_clock::now();
-        std::cout << "[Baseline] Done.";
-        auto t1 = std::chrono::high_resolution_clock::now();
-        double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-        std::cout << "  Time: " << ms << " ms" << std::endl;
+        std::cout << "[Baseline] Done." << std::endl;
     }
     else if (mode == "openmp") {
-        auto t0 = std::chrono::high_resolution_clock::now();
         matmul_openmp(A, B, C, N, M, P);
-        auto t1 = std::chrono::high_resolution_clock::now();
-        double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-
-        std::cout << "[OpenMP] Valid: "
-                  << (validate(C, C_ref, N, P) ? "true" : "false")
-                  << "  Time: " << ms << " ms" << std::endl;
+        std::cout << "[OpenMP] Valid: " << (validate(C, C_ref, N, P) ? "true" : "false") << std::endl;
     }
     else if (mode == "block") {
-        auto t0 = std::chrono::high_resolution_clock::now();
         matmul_block_tiling(A, B, C, N, M, P);
-        auto t1 = std::chrono::high_resolution_clock::now();
-        double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-
-        std::cout << "[Block] Valid: "
-                  << (validate(C, C_ref, N, P) ? "true" : "false")
-                  << "  Time: " << ms << " ms" << std::endl;
+        std::cout << "[Block] Valid: " << (validate(C, C_ref, N, P) ? "true" : "false") << std::endl;
     }
     else if (mode == "other") {
-        auto t0 = std::chrono::high_resolution_clock::now();
         matmul_other(A, B, C, N, M, P);
-        auto t1 = std::chrono::high_resolution_clock::now();
-        double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-
-        std::cout << "[Other] Valid: "
-                  << (validate(C, C_ref, N, P) ? "true" : "false")
-                  << "  Time: " << ms << " ms" << std::endl;
+        std::cout << "[Other] Valid: " << (validate(C, C_ref, N, P) ? "true" : "false") << std::endl;
     }
     else {
-        std::cerr << "Usage: ./outputfile [baseline|openmp|block|mpi|other]" 
-                  << std::endl;
+        std::cerr << "Usage: ./outputfile [baseline|openmp|block|mpi|other]" << std::endl;
     }
     return 0;
 }

@@ -3,10 +3,8 @@
 #include <random>
 #include <cmath>
 #include <algorithm>
-#include <chrono>      // 新增
 #include <omp.h>
 #include <mpi.h>
-
 
 // 编译执行方式参考：
 // 编译， 也可以使用g++，但使用MPI时需使用mpic
@@ -103,56 +101,70 @@ void matmul_block_tiling(const std::vector<double>& A,
     }
 }
 
-// 方式3: 利用MPI消息传递，实现多进程并行优化 （主要修改函数）
-void matmul_mpi(int N, int M, int P) 
-{
-    std::cout << "matmul_mpi methods..." << std::endl;
+// 方式3: MPI多进程并行
+void matmul_mpi(const std::vector<double>& A,
+                const std::vector<double>& B,
+                std::vector<double>& C,
+                int N, int M, int P) {
     int rank, size;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-    int local_N = N / size;
-    std::vector<double> local_A(local_N * M);
-    std::vector<double> B(M * P);
-    std::vector<double> local_C(local_N * P, 0);
-    std::vector<double> C;
+    // 计算每个进程分配的行数
+    int base = N / size;
+    int rem  = N % size;
+    std::vector<int> rows(size);
+    for (int i = 0; i < size; ++i)
+        rows[i] = base + (i < rem ? 1 : 0);
 
-    if (rank == 0) 
-    {
-        std::vector<double> A(N * M);
-        init_matrix(A, N, M);
-        init_matrix(B, M, P);
-        C.resize(N * P);
-        MPI_Scatter(A.data(), local_N * M, MPI_DOUBLE, local_A.data(), local_N * M, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-    } 
-    else 
-    {
-        MPI_Scatter(nullptr, local_N * M, MPI_DOUBLE, local_A.data(), local_N * M, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    // 计算sendcounts和displs
+    std::vector<int> sendcounts(size), displs(size);
+    int offset = 0;
+    for (int i = 0; i < size; ++i) {
+        sendcounts[i] = rows[i] * M;
+        displs[i] = offset;
+        offset += sendcounts[i];
     }
 
-    MPI_Bcast(B.data(), M * P, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    int local_rows = rows[rank];
+    std::vector<double> A_local(local_rows * M);
 
-    for (int i = 0; i < local_N; ++i)
-    {
-        for (int j = 0; j < P; ++j) 
-        {
-            double sum = 0;
+    // Scatter A
+    MPI_Scatterv(A.data(), sendcounts.data(), displs.data(), MPI_DOUBLE,
+                 A_local.data(), sendcounts[rank], MPI_DOUBLE,
+                 0, MPI_COMM_WORLD);
+
+    // Broadcast B
+    std::vector<double> B_full;
+    if (rank == 0) B_full = B;
+    else           B_full.resize(M * P);
+    MPI_Bcast(B_full.data(), M * P, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+    // 本地计算
+    std::vector<double> C_local(local_rows * P, 0.0);
+    for (int i = 0; i < local_rows; ++i) {
+        for (int j = 0; j < P; ++j) {
+            double sum = 0.0;
             for (int k = 0; k < M; ++k)
-            {
-                sum += local_A[i * M + k] * B[k * P + j];
-            }
-            local_C[i * P + j] = sum;
+                sum += A_local[i * M + k] * B_full[k * P + j];
+            C_local[i * P + j] = sum;
         }
     }
 
-    MPI_Gather(local_C.data(), local_N * P, MPI_DOUBLE,rank == 0 ? C.data() : nullptr, local_N * P, MPI_DOUBLE,0, MPI_COMM_WORLD);
-
-    if (rank == 0)
-    {
-        std::cout << "[MPI] Matrix multiplication completed." << std::endl;
+    // Gather C
+    std::vector<int> recvcounts(size), recvdispls(size);
+    offset = 0;
+    for (int i = 0; i < size; ++i) {
+        recvcounts[i]  = rows[i] * P;
+        recvdispls[i] = offset;
+        offset += recvcounts[i];
     }
-}
 
+    if (rank == 0) C.assign(N * P, 0.0);
+    MPI_Gatherv(C_local.data(), local_rows * P, MPI_DOUBLE,
+                C.data(), recvcounts.data(), recvdispls.data(),
+                MPI_DOUBLE, 0, MPI_COMM_WORLD);
+}
 
 // 方式4: 矩阵转置优化（Other）
 void matmul_other(const std::vector<double>& A,
@@ -188,67 +200,27 @@ int main(int argc, char** argv) {
 
     if (mode == "mpi") {
         MPI_Init(&argc, &argv);
-
-        int rank;
-        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-
-        // 计时开始
-        auto t0 = std::chrono::high_resolution_clock::now();
-
         matmul_mpi(A, B, C, N, M, P);
-
-        // 计时结束
-        auto t1 = std::chrono::high_resolution_clock::now();
-        double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-
-        if (rank == 0) {
-            bool ok = validate(C, C_ref, N, P);
-            std::cout << "[MPI] Valid: " << (ok ? "true" : "false")
-                      << "  Time: " << ms << " ms" << std::endl;
-        }
-
         MPI_Finalize();
+        std::cout << "[MPI] Valid: " << (validate(C, C_ref, N, P) ? "true" : "false") << std::endl;
     }
     else if (mode == "baseline") {
-        auto t0 = std::chrono::high_resolution_clock::now();
-        std::cout << "[Baseline] Done.";
-        auto t1 = std::chrono::high_resolution_clock::now();
-        double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-        std::cout << "  Time: " << ms << " ms" << std::endl;
+        std::cout << "[Baseline] Done." << std::endl;
     }
     else if (mode == "openmp") {
-        auto t0 = std::chrono::high_resolution_clock::now();
         matmul_openmp(A, B, C, N, M, P);
-        auto t1 = std::chrono::high_resolution_clock::now();
-        double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-
-        std::cout << "[OpenMP] Valid: "
-                  << (validate(C, C_ref, N, P) ? "true" : "false")
-                  << "  Time: " << ms << " ms" << std::endl;
+        std::cout << "[OpenMP] Valid: " << (validate(C, C_ref, N, P) ? "true" : "false") << std::endl;
     }
     else if (mode == "block") {
-        auto t0 = std::chrono::high_resolution_clock::now();
         matmul_block_tiling(A, B, C, N, M, P);
-        auto t1 = std::chrono::high_resolution_clock::now();
-        double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-
-        std::cout << "[Block] Valid: "
-                  << (validate(C, C_ref, N, P) ? "true" : "false")
-                  << "  Time: " << ms << " ms" << std::endl;
+        std::cout << "[Block] Valid: " << (validate(C, C_ref, N, P) ? "true" : "false") << std::endl;
     }
     else if (mode == "other") {
-        auto t0 = std::chrono::high_resolution_clock::now();
         matmul_other(A, B, C, N, M, P);
-        auto t1 = std::chrono::high_resolution_clock::now();
-        double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-
-        std::cout << "[Other] Valid: "
-                  << (validate(C, C_ref, N, P) ? "true" : "false")
-                  << "  Time: " << ms << " ms" << std::endl;
+        std::cout << "[Other] Valid: " << (validate(C, C_ref, N, P) ? "true" : "false") << std::endl;
     }
     else {
-        std::cerr << "Usage: ./outputfile [baseline|openmp|block|mpi|other]" 
-                  << std::endl;
+        std::cerr << "Usage: ./outputfile [baseline|openmp|block|mpi|other]" << std::endl;
     }
     return 0;
 }

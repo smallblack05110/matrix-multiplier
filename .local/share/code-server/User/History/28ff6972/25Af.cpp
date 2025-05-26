@@ -7,7 +7,6 @@
 #include <omp.h>
 #include <mpi.h>
 
-
 // 编译执行方式参考：
 // 编译， 也可以使用g++，但使用MPI时需使用mpic
 // mpic++ -fopenmp -o outputfile sourcefile.cpp

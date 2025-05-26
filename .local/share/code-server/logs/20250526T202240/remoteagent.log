@@ -19,3 +19,18 @@ Require stack:
 - /usr/lib/code-server/out/node/util.js
 - /usr/lib/code-server/out/node/cli.js
 - /usr/lib/code-server/out/node/entry.js
+[2025-05-26 20:30:25.709] [remoteagent] [info] [173.8.125.0][dfe9cdf7][ManagementConnection] The client has disconnected gracefully, so the connection will be disposed.
+[2025-05-26 20:30:25.733] [remoteagent] [info] [173.8.125.0][80de559c][ExtensionHostConnection] <117> Extension Host Process exited with code: 0, signal: null.
+[2025-05-26 20:30:26.088] [remoteagent] [info] [173.8.125.0][305396d7][ManagementConnection] New connection established.
+[2025-05-26 20:30:26.793] [remoteagent] [info] [173.8.125.0][789b0bd1][ExtensionHostConnection] New connection established.
+[2025-05-26 20:30:26.809] [remoteagent] [info] [173.8.125.0][789b0bd1][ExtensionHostConnection] <375> Launched Extension Host Process.
+[2025-05-26 20:30:34.525] [remoteagent] [info] [173.8.125.0][305396d7][ManagementConnection] The client has disconnected gracefully, so the connection will be disposed.
+[2025-05-26 20:30:34.542] [remoteagent] [info] [173.8.125.0][789b0bd1][ExtensionHostConnection] <375> Extension Host Process exited with code: 0, signal: null.
+[2025-05-26 20:30:34.749] [remoteagent] [info] [173.8.125.0][0c2a5b25][ManagementConnection] New connection established.
+[2025-05-26 20:30:35.203] [remoteagent] [info] [173.8.125.0][7a767d9d][ExtensionHostConnection] New connection established.
+[2025-05-26 20:30:35.215] [remoteagent] [info] [173.8.125.0][7a767d9d][ExtensionHostConnection] <391> Launched Extension Host Process.
+[2025-05-26 21:34:01.100] [remoteagent] [info] [173.8.125.0][0c2a5b25][ManagementConnection] The client has disconnected gracefully, so the connection will be disposed.
+[2025-05-26 21:34:01.118] [remoteagent] [info] [173.8.125.0][7a767d9d][ExtensionHostConnection] <391> Extension Host Process exited with code: 0, signal: null.
+[2025-05-26 21:34:31.869] [remoteagent] [info] [173.8.125.0][ab4810f7][ManagementConnection] New connection established.
+[2025-05-26 21:34:32.418] [remoteagent] [info] [173.8.125.0][d0dfb981][ExtensionHostConnection] New connection established.
+[2025-05-26 21:34:32.426] [remoteagent] [info] [173.8.125.0][d0dfb981][ExtensionHostConnection] <3094> Launched Extension Host Process.

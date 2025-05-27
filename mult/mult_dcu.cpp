@@ -227,7 +227,6 @@ int main(int argc, char** argv) {
         hipEventDestroy(start);
         hipEventDestroy(stop);
     }
-    // 其他模式略 …
 
     hipFree(d_A);
     hipFree(d_B);

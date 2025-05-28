@@ -1,235 +1,129 @@
+#include <hip/hip_runtime.h>
 #include <iostream>
 #include <vector>
 #include <random>
 #include <cmath>
-#include <algorithm>
 #include <chrono>
-#include <omp.h>
-#include <hip/hip_runtime.h>
 
-// 在文件开头定义块大小
-enum { TILE_SIZE = 16 };
+// 矩阵大小
+#define N 1024
+#define M 2024
+#define P 512
 
-// 简单的错误检查
-inline void hipCheck(hipError_t err, const char* msg) {
-    if (err != hipSuccess) {
-        std::cerr << "HIP Error: " << msg
-                  << " (" << hipGetErrorString(err) << ")\n";
-        std::exit(EXIT_FAILURE);
+// 每个线程块的尺寸
+constexpr int BLOCK_DIM_X = 16;
+constexpr int BLOCK_DIM_Y = 16;
+
+// GPU 核函数：每个线程计算一个 C[i][j]
+__global__ void matmul_kernel(const double* A, const double* B, double* C, int n, int m, int p) {
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row < n && col < p) {
+        double sum = 0.0;
+        for (int k = 0; k < m; ++k) {
+            sum += A[row * m + k] * B[k * p + col];
+        }
+        C[row * p + col] = sum;
     }
 }
 
-// 初始化矩阵并随机填充
-void init_matrix(std::vector<double>& mat, int rows, int cols) {
+void init_matrix(std::vector<double>& mat) {
     std::mt19937 gen(42);
-    std::uniform_real_distribution<double> dist(-100.0, 100.0);
-    for (int i = 0; i < rows * cols; ++i) mat[i] = dist(gen);
+    std::uniform_real_distribution<double> dist(-1.0, 1.0);
+    for (auto& x : mat)
+        x = dist(gen);
 }
 
-// 验证结果
-bool validate(const std::vector<double>& A,
-              const std::vector<double>& B,
-              int rows, int cols, double tol = 1e-6) {
-    for (int i = 0; i < rows * cols; ++i)
-        if (std::abs(A[i] - B[i]) > tol) return false;
+void matmul_cpu(const std::vector<double>& A, const std::vector<double>& B, std::vector<double>& C) {
+    for (int i = 0; i < N; ++i) {
+        for (int j = 0; j < P; ++j) {
+            double sum = 0.0;
+            for (int k = 0; k < M; ++k)
+                sum += A[i * M + k] * B[k * P + j];
+            C[i * P + j] = sum;
+        }
+    }
+}
+
+bool validate(const std::vector<double>& ref, const std::vector<double>& test) {
+    for (size_t i = 0; i < ref.size(); ++i) {
+        if (std::abs(ref[i] - test[i]) > 1e-6) {
+            std::cerr << "Mismatch at " << i << ": ref=" << ref[i] << " vs test=" << test[i] << "\n";
+            return false;
+        }
+    }
     return true;
 }
 
+int main() {
+    std::vector<double> A(N * M), B(M * P), C(N * P), C_ref(N * P);
+    init_matrix(A);
+    init_matrix(B);
 
-// 基础矩阵乘法baseline实现
-void matmul_baseline(const std::vector<double>& A,
-                     const std::vector<double>& B,
-                     std::vector<double>& C,
-                     int N, int M, int P) {
-    for (int i = 0; i < N; ++i) {
-        for (int j = 0; j < P; ++j) {
-            double sum = 0.0;
-            for (int k = 0; k < M; ++k)
-                sum += A[i * M + k] * B[k * P + j];
-            C[i * P + j] = sum;
-        }
-    }
-}
+    // 1. CPU 基准计算并计时
+    auto cpu_start = std::chrono::high_resolution_clock::now();
+    matmul_cpu(A, B, C_ref);
+    auto cpu_end   = std::chrono::high_resolution_clock::now();
+    double cpu_ms  = std::chrono::duration<double, std::milli>(cpu_end - cpu_start).count();
+    std::cout << "[CPU] Time: " << cpu_ms << " ms\n";
 
-// 方式1: OpenMP多线程并行
-void matmul_openmp(const std::vector<double>& A,
-                   const std::vector<double>& B,
-                   std::vector<double>& C,
-                   int N, int M, int P) {
-    #pragma omp parallel for collapse(2)
-    for (int i = 0; i < N; ++i) {
-        for (int j = 0; j < P; ++j) {
-            double sum = 0.0;
-            for (int k = 0; k < M; ++k)
-                sum += A[i * M + k] * B[k * P + j];
-            C[i * P + j] = sum;
-        }
-    }
-}
+    // 2. 设备端指针与内存分配
+    double *d_A = nullptr, *d_B = nullptr, *d_C = nullptr;
+    size_t size_A = N * M * sizeof(double);
+    size_t size_B = M * P * sizeof(double);
+    size_t size_C = N * P * sizeof(double);
 
-// 方式2: 子块（block）并行优化
-void matmul_block_tiling(const std::vector<double>& A,
-                         const std::vector<double>& B,
-                         std::vector<double>& C,
-                         int N, int M, int P,
-                         int block_size /*=64*/) 
-{
-    // 外层两层循环并行，每个线程处理一个小块
-    #pragma omp parallel for collapse(2)
-    for (int ii = 0; ii < N; ii += block_size) {
-        for (int jj = 0; jj < P; jj += block_size) {
-            // 对当前 (ii, jj) 块，遍历所有 kk 块
-            for (int kk = 0; kk < M; kk += block_size) {
-                int i_end = std::min(ii + block_size, N);
-                int j_end = std::min(jj + block_size, P);
-                int k_end = std::min(kk + block_size, M);
+    // GPU 总体计时开始
+    auto gpu_start = std::chrono::high_resolution_clock::now();
 
-                // 块内部标准三层循环
-                for (int i = ii; i < i_end; ++i) {
-                    for (int k = kk; k < k_end; ++k) {
-                        double a_val = A[i * M + k];
-                        for (int j = jj; j < j_end; ++j) {
-                            C[i * P + j] += a_val * B[k * P + j];
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
+    hipMalloc(&d_A, size_A);
+    hipMalloc(&d_B, size_B);
+    hipMalloc(&d_C, size_C);
 
-// // 方式3: MPI 多进程并行
-// void matmul_mpi(const std::vector<double>& A,
-//                 const std::vector<double>& B,
-//                 std::vector<double>& C,
-//                 int N, int M, int P)
-// {
-//     int rank, size;
-//     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-//     MPI_Comm_size(MPI_COMM_WORLD, &size);
+    // 3. 拷贝输入到设备
+    hipMemcpy(d_A, A.data(), size_A, hipMemcpyHostToDevice);
+    hipMemcpy(d_B, B.data(), size_B, hipMemcpyHostToDevice);
 
-//     int local_N = N / size;
-//     std::vector<double> local_A(local_N * M);
-//     std::vector<double> local_C(local_N * P, 0.0);
+    // 4. 配置执行参数
+    dim3 blockDim(BLOCK_DIM_X, BLOCK_DIM_Y);
+    dim3 gridDim((P + blockDim.x - 1) / blockDim.x,
+                 (N + blockDim.y - 1) / blockDim.y);
 
-//     MPI_Scatter(A.data(), local_N * M, MPI_DOUBLE,
-//                 local_A.data(), local_N * M, MPI_DOUBLE,
-//                 0, MPI_COMM_WORLD);
+    // 5. GPU 核函数计时事件
+    hipEvent_t start, stop;
+    hipEventCreate(&start);
+    hipEventCreate(&stop);
+    hipEventRecord(start);
 
-//     MPI_Bcast(const_cast<double*>(B.data()),
-//               M * P, MPI_DOUBLE,
-//               0, MPI_COMM_WORLD);
+    hipLaunchKernelGGL(matmul_kernel,
+                       gridDim, blockDim, 0, 0,
+                       d_A, d_B, d_C, N, M, P);
 
-//     for (int i = 0; i < local_N; ++i) {
-//         for (int j = 0; j < P; ++j) {
-//             double sum = 0.0;
-//             for (int k = 0; k < M; ++k) {
-//                 sum += local_A[i * M + k] * B[k * P + j];
-//             }
-//             local_C[i * P + j] = sum;
-//         }
-//     }
+    hipEventRecord(stop);
+    hipEventSynchronize(stop);
+    float kernel_ms = 0;
+    hipEventElapsedTime(&kernel_ms, start, stop);
 
-//     MPI_Gather(local_C.data(), local_N * P, MPI_DOUBLE,
-//                C.data(), local_N * P, MPI_DOUBLE,
-//                0, MPI_COMM_WORLD);
+    // 6. 拷贝结果回主机
+    hipMemcpy(C.data(), d_C, size_C, hipMemcpyDeviceToHost);
 
-//     if (rank == 0) {
-//         std::cout << "[MPI] Matrix multiplication completed." << std::endl;
-//     }
-// }
+    // GPU 总体计时结束
+    auto gpu_end = std::chrono::high_resolution_clock::now();
+    double gpu_total_ms = std::chrono::duration<double, std::milli>(gpu_end - gpu_start).count();
 
-// 方式4: 矩阵转置优化（Other）
-void matmul_other(const std::vector<double>& A,
-                  const std::vector<double>& B,
-                  std::vector<double>& C,
-                  int N, int M, int P) {
-    std::vector<double> Bt(P * M);
-    for (int i = 0; i < M; ++i)
-        for (int j = 0; j < P; ++j)
-            Bt[j * M + i] = B[i * P + j];
+    std::cout << "[HIP] Kernel time: " << kernel_ms << " ms\n";
+    std::cout << "[HIP] Total GPU time (H2D+kernel+D2H): " << gpu_total_ms << " ms\n";
 
-    #pragma omp parallel for collapse(2)
-    for (int i = 0; i < N; ++i) {
-        for (int j = 0; j < P; ++j) {
-            double sum = 0.0;
-            for (int k = 0; k < M; ++k)
-                sum += A[i * M + k] * Bt[j * M + k];
-            C[i * P + j] = sum;
-        }
-    }
-}
+    // 7. 验证
+    bool ok = validate(C_ref, C);
+    std::cout << "[HIP] Validation: " << (ok ? "PASS" : "FAIL") << std::endl;
 
-// DCU 核函数
-__global__ void matmul_tiled_kernel(const double* A, const double* B, double* C,
-                                    int N, int M, int P) {
-    __shared__ double As[TILE_SIZE][TILE_SIZE];
-    __shared__ double Bs[TILE_SIZE][TILE_SIZE];
-    int bx = blockIdx.x, by = blockIdx.y;
-    int tx = threadIdx.x, ty = threadIdx.y;
-    int row = by * TILE_SIZE + ty;
-    int col = bx * TILE_SIZE + tx;
-    double sum = 0.0;
-    for (int k = 0; k < M; k += TILE_SIZE) {
-        As[ty][tx] = (row < N && k+tx < M) ? A[row*M + k + tx] : 0.0;
-        Bs[ty][tx] = (k+ty < M && col < P) ? B[(k+ty)*P + col] : 0.0;
-        __syncthreads();
-        for (int i = 0; i < TILE_SIZE; ++i) sum += As[ty][i] * Bs[i][tx];
-        __syncthreads();
-    }
-    if (row < N && col < P) C[row*P + col] = sum;
-}
-
-int main(int argc, char** argv) {
-    const int N = 1024, M = 2048, P = 512;
-    std::string mode = argc >= 2 ? argv[1] : "baseline";
-    std::vector<double> A(N*M), B(M*P), C(N*P), C_ref(N*P);
-    init_matrix(A, N, M);
-    init_matrix(B, M, P);
-    matmul_baseline(A, B, C_ref, N, M, P);
-
-    double *d_A=nullptr, *d_B=nullptr, *d_C=nullptr;
-    size_t size_A=N*M*sizeof(double), size_B=M*P*sizeof(double), size_C=N*P*sizeof(double);
-
-    // —— 包含分配在内的预处理计时 ——
-    auto alloc_t0 = std::chrono::high_resolution_clock::now();
-    hipCheck(hipMalloc(&d_A, size_A), "hipMalloc A");
-    hipCheck(hipMalloc(&d_B, size_B), "hipMalloc B");
-    hipCheck(hipMalloc(&d_C, size_C), "hipMalloc C");
-    hipCheck(hipMemcpy(d_A, A.data(), size_A, hipMemcpyHostToDevice), "hipMemcpy A");
-    hipCheck(hipMemcpy(d_B, B.data(), size_B, hipMemcpyHostToDevice), "hipMemcpy B");
-    auto alloc_t1 = std::chrono::high_resolution_clock::now();
-    double alloc_ms = std::chrono::duration<double, std::milli>(alloc_t1 - alloc_t0).count();
-    std::cout << "[DCU alloc+H2D] Time: " << alloc_ms << " ms" << std::endl;
-
-    if (mode == "dcu") {
-        hipEvent_t start, stop;
-        hipEventCreate(&start);
-        hipEventCreate(&stop);
-        hipEventRecord(start, nullptr);
-
-        dim3 blockDim(TILE_SIZE, TILE_SIZE);
-        dim3 gridDim((P+TILE_SIZE-1)/TILE_SIZE,(N+TILE_SIZE-1)/TILE_SIZE);
-        hipLaunchKernelGGL(matmul_tiled_kernel,
-                           gridDim, blockDim, 0, 0,
-                           d_A, d_B, d_C, N, M, P);
-
-        hipEventRecord(stop, nullptr);
-        hipEventSynchronize(stop);
-        float kernel_ms = 0;
-        hipEventElapsedTime(&kernel_ms, start, stop);
-        std::cout << "[DCU-kernel] Time: " << kernel_ms << " ms" << std::endl;
-
-        hipCheck(hipMemcpy(C.data(), d_C, size_C, hipMemcpyDeviceToHost), "hipMemcpy C");
-        bool ok = validate(C, C_ref, N, P);
-        std::cout << "[DCU] Valid: " << (ok?"true":"false") << std::endl;
-
-        hipEventDestroy(start);
-        hipEventDestroy(stop);
-    }
-
+    // 8. 清理
     hipFree(d_A);
     hipFree(d_B);
     hipFree(d_C);
-    return 0;
+    hipEventDestroy(start);
+    hipEventDestroy(stop);
+
+    return ok ? 0 : 1;
 }

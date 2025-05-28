@@ -1,0 +1,7 @@
+"Name","Pars","Calls","TotalDurationNs","AverageNs","Percentage"
+"matmul_kernel(double const*, double const*, double*, int, int, int)","(1,64,2),(1,16,16) ","1","11520","11520","33.335"
+"matmul_kernel(double const*, double const*, double*, int, int, int)","(1,64,1),(1,16,16) ","1","9438","9438","27.311"
+"add_bias_kernel(double*, double const*, int, int)","(1,1,80),(1,1,256) ","1","5440","5440","15.742"
+"relu_kernel(double*, int)","(1,1,80),(1,1,256) ","1","4960","4960","14.353"
+"add_bias_kernel(double*, double const*, int, int)","(1,1,20),(1,1,256) ","1","3200","3200","9.26"
+"Total"," ","5","34558","6911","100.0"

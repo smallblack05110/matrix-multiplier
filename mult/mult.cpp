@@ -7,7 +7,12 @@
 #include <omp.h>
 #include <mpi.h>
 
-// 初始化矩阵（以一维数组形式表示），随机填充浮点数
+constexpr int BLOCK_SIZE = 64;
+
+template<typename T>
+inline T minv(T a, T b) { return a < b ? a : b; }
+
+// 初始化矩阵，随机填充
 void init_matrix(std::vector<double>& mat, int rows, int cols) {
     std::mt19937 gen(42);
     std::uniform_real_distribution<double> dist(-100.0, 100.0);
@@ -15,7 +20,7 @@ void init_matrix(std::vector<double>& mat, int rows, int cols) {
         mat[i] = dist(gen);
 }
 
-// 验证优化后结果与baseline是否一致
+// 验证结果
 bool validate(const std::vector<double>& A,
               const std::vector<double>& B,
               int rows, int cols, double tol = 1e-6) {
@@ -55,20 +60,20 @@ void matmul_openmp(const std::vector<double>& A,
     }
 }
 
-// 方式2: 子块（block）并行优化
+// Block tiling cache 优化
 void matmul_block_tiling(const std::vector<double>& A,
                          const std::vector<double>& B,
                          std::vector<double>& C,
                          int N, int M, int P,
-                         int block_size /*=64*/) 
-{
-    #pragma omp parallel for collapse(2)
+                         int block_size = BLOCK_SIZE) {
+    std::fill(C.begin(), C.end(), 0.0);
+    #pragma omp parallel for collapse(2) schedule(static)
     for (int ii = 0; ii < N; ii += block_size) {
         for (int jj = 0; jj < P; jj += block_size) {
             for (int kk = 0; kk < M; kk += block_size) {
-                int i_end = std::min(ii + block_size, N);
-                int j_end = std::min(jj + block_size, P);
-                int k_end = std::min(kk + block_size, M);
+                int i_end = minv(ii + block_size, N);
+                int j_end = minv(jj + block_size, P);
+                int k_end = minv(kk + block_size, M);
                 for (int i = ii; i < i_end; ++i) {
                     for (int k = kk; k < k_end; ++k) {
                         double a_val = A[i * M + k];
@@ -82,12 +87,11 @@ void matmul_block_tiling(const std::vector<double>& A,
     }
 }
 
-// 方式3: MPI 多进程并行
+// MPI + Cache Blocking
 void matmul_mpi(const std::vector<double>& A,
                 const std::vector<double>& B,
                 std::vector<double>& C,
-                int N, int M, int P)
-{
+                int N, int M, int P) {
     int rank, size;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
@@ -99,18 +103,26 @@ void matmul_mpi(const std::vector<double>& A,
     MPI_Scatter(A.data(), local_N * M, MPI_DOUBLE,
                 local_A.data(), local_N * M, MPI_DOUBLE,
                 0, MPI_COMM_WORLD);
-
     MPI_Bcast(const_cast<double*>(B.data()),
               M * P, MPI_DOUBLE,
               0, MPI_COMM_WORLD);
 
-    for (int i = 0; i < local_N; ++i) {
-        for (int j = 0; j < P; ++j) {
-            double sum = 0.0;
-            for (int k = 0; k < M; ++k) {
-                sum += local_A[i * M + k] * B[k * P + j];
+    // 本地计算使用 cache blocking
+    for (int ii = 0; ii < local_N; ii += BLOCK_SIZE) {
+        for (int kk = 0; kk < M; kk += BLOCK_SIZE) {
+            for (int jj = 0; jj < P; jj += BLOCK_SIZE) {
+                int i_max = minv(ii + BLOCK_SIZE, local_N);
+                int k_max = minv(kk + BLOCK_SIZE, M);
+                int j_max = minv(jj + BLOCK_SIZE, P);
+                for (int i = ii; i < i_max; ++i) {
+                    for (int k = kk; k < k_max; ++k) {
+                        double a = local_A[i * M + k];
+                        for (int j = jj; j < j_max; ++j) {
+                            local_C[i * P + j] += a * B[k * P + j];
+                        }
+                    }
+                }
             }
-            local_C[i * P + j] = sum;
         }
     }
 
@@ -123,7 +135,7 @@ void matmul_mpi(const std::vector<double>& A,
     }
 }
 
-// 方式4: 矩阵转置优化（Other）
+// Transpose + Cache Blocking
 void matmul_other(const std::vector<double>& A,
                   const std::vector<double>& B,
                   std::vector<double>& C,
@@ -133,13 +145,23 @@ void matmul_other(const std::vector<double>& A,
         for (int j = 0; j < P; ++j)
             Bt[j * M + i] = B[i * P + j];
 
-    #pragma omp parallel for collapse(2)
-    for (int i = 0; i < N; ++i) {
-        for (int j = 0; j < P; ++j) {
-            double sum = 0.0;
-            for (int k = 0; k < M; ++k)
-                sum += A[i * M + k] * Bt[j * M + k];
-            C[i * P + j] = sum;
+    std::fill(C.begin(), C.end(), 0.0);
+    #pragma omp parallel for collapse(2) schedule(static)
+    for (int ii = 0; ii < N; ii += BLOCK_SIZE) {
+        for (int jj = 0; jj < P; jj += BLOCK_SIZE) {
+            int i_max = minv(ii + BLOCK_SIZE, N);
+            int j_max = minv(jj + BLOCK_SIZE, P);
+            for (int i = ii; i < i_max; ++i) {
+                for (int j = jj; j < j_max; ++j) {
+                    double sum = 0.0;
+                    int baseA = i * M;
+                    int baseBt = j * M;
+                    for (int k = 0; k < M; ++k) {
+                        sum += A[baseA + k] * Bt[baseBt + k];
+                    }
+                    C[i * P + j] = sum;
+                }
+            }
         }
     }
 }
@@ -165,69 +187,27 @@ int main(int argc, char** argv) {
             auto t0 = std::chrono::high_resolution_clock::now();
             matmul_mpi(A, B, C, N, M, P);
             auto t1 = std::chrono::high_resolution_clock::now();
-            if (rank == 0) {
-                total_ms += std::chrono::duration<double, std::milli>(t1 - t0).count();
-            }
+            if (rank == 0) total_ms += std::chrono::duration<double, std::milli>(t1 - t0).count();
         }
         if (rank == 0) {
-            double avg_ms = total_ms / RUNS;
             std::cout << "[MPI] Valid: " << (validate(C, C_ref, N, P) ? "true" : "false")
-                      << "  AvgTime: " << avg_ms << " ms (" << RUNS << " runs)\n";
+                      << "  AvgTime: " << total_ms / RUNS << " ms\n";
         }
         MPI_Finalize();
-    }
-    else if (mode == "baseline") {
-        double total_ms = 0;
-        for (int iter = 0; iter < RUNS; ++iter) {
-            auto t0 = std::chrono::high_resolution_clock::now();
-            matmul_baseline(A, B, C, N, M, P);
-            auto t1 = std::chrono::high_resolution_clock::now();
-            total_ms += std::chrono::duration<double, std::milli>(t1 - t0).count();
-        }
-        double avg_ms = total_ms / RUNS;
-        std::cout << "[Baseline] Valid: " << (validate(C, C_ref, N, P) ? "true" : "false")
-                  << "  AvgTime: " << avg_ms << " ms (" << RUNS << " runs)\n";
-    }
-    else if (mode == "openmp") {
-        double total_ms = 0;
-        for (int iter = 0; iter < RUNS; ++iter) {
-            auto t0 = std::chrono::high_resolution_clock::now();
-            matmul_openmp(A, B, C, N, M, P);
-            auto t1 = std::chrono::high_resolution_clock::now();
-            total_ms += std::chrono::duration<double, std::milli>(t1 - t0).count();
-        }
-        double avg_ms = total_ms / RUNS;
-        std::cout << "[OpenMP] Valid: " << (validate(C, C_ref, N, P) ? "true" : "false")
-                  << "  AvgTime: " << avg_ms << " ms (" << RUNS << " runs)\n";
-    }
-    else if (mode == "block") {
+    } else {
         double total_ms = 0;
         for (int iter = 0; iter < RUNS; ++iter) {
             std::fill(C.begin(), C.end(), 0.0);
             auto t0 = std::chrono::high_resolution_clock::now();
-            matmul_block_tiling(A, B, C, N, M, P, 64);
+            if (mode == "baseline") matmul_baseline(A, B, C, N, M, P);
+            else if (mode == "openmp") matmul_openmp(A, B, C, N, M, P);
+            else if (mode == "block") matmul_block_tiling(A, B, C, N, M, P, BLOCK_SIZE);
+            else if (mode == "other") matmul_other(A, B, C, N, M, P);
             auto t1 = std::chrono::high_resolution_clock::now();
             total_ms += std::chrono::duration<double, std::milli>(t1 - t0).count();
         }
-        double avg_ms = total_ms / RUNS;
-        std::cout << "[Block] Valid: " << (validate(C, C_ref, N, P) ? "true" : "false")
-                  << "  AvgTime: " << avg_ms << " ms (" << RUNS << " runs)\n";
-    }
-    else if (mode == "other") {
-        double total_ms = 0;
-        for (int iter = 0; iter < RUNS; ++iter) {
-            std::fill(C.begin(), C.end(), 0.0);
-            auto t0 = std::chrono::high_resolution_clock::now();
-            matmul_other(A, B, C, N, M, P);
-            auto t1 = std::chrono::high_resolution_clock::now();
-            total_ms += std::chrono::duration<double, std::milli>(t1 - t0).count();
-        }
-        double avg_ms = total_ms / RUNS;
-        std::cout << "[Other] Valid: " << (validate(C, C_ref, N, P) ? "true" : "false")
-                  << "  AvgTime: " << avg_ms << " ms (" << RUNS << " runs)\n";
-    }
-    else {
-        std::cerr << "Usage: ./outputfile [baseline|openmp|block|mpi|other]\n";
+        std::cout << "[" << mode << "] Valid: " << (validate(C, C_ref, N, P) ? "true" : "false")
+                  << "  AvgTime: " << total_ms / RUNS << " ms\n";
     }
 
     return 0;

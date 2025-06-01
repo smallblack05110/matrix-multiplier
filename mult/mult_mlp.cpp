@@ -277,7 +277,154 @@ void save_model_4layer(const std::vector<double>& w1, const std::vector<double>&
     std::cout << "[INFO] 4-layer model saved to " << filename << std::endl;
 }
 
-// ============================ Main Function ============================
+// ============================ 增强版早停机制 ============================
+struct EnhancedEarlyStopping {
+    double best_loss;
+    double smooth_loss;
+    int patience;
+    int wait_count;
+    double min_delta;
+    double smooth_factor;
+    int lookback_window;
+    std::vector<double> loss_history;
+    int initial_patience;
+    bool restore_best;
+    std::vector<double> best_w1, best_b1, best_w2, best_b2, best_w3, best_b3, best_w4, best_b4;
+
+    EnhancedEarlyStopping(int patience = 150, double min_delta = 1e-6,
+                         double smooth_factor = 0.1, int lookback_window = 10,
+                         bool restore_best = true)
+        : best_loss(std::numeric_limits<double>::max()),
+          smooth_loss(std::numeric_limits<double>::max()),
+          patience(patience),
+          wait_count(0),
+          min_delta(min_delta),
+          smooth_factor(smooth_factor),
+          lookback_window(lookback_window),
+          initial_patience(patience),
+          restore_best(restore_best) 
+    {
+        loss_history.reserve(1000);
+        best_w1.resize(INPUT_DIM * HIDDEN_DIM1);
+        best_b1.resize(HIDDEN_DIM1);
+        best_w2.resize(HIDDEN_DIM1 * HIDDEN_DIM2);
+        best_b2.resize(HIDDEN_DIM2);
+        best_w3.resize(HIDDEN_DIM2 * HIDDEN_DIM3);
+        best_b3.resize(HIDDEN_DIM3);
+        best_w4.resize(HIDDEN_DIM3 * OUTPUT_DIM);
+        best_b4.resize(OUTPUT_DIM);
+    }
+
+    bool should_stop(double loss, int epoch, double current_lr,
+                     double* d_w1, double* d_b1, double* d_w2, double* d_b2,
+                     double* d_w3, double* d_b3, double* d_w4, double* d_b4) 
+    {
+        // 平滑损失
+        if (smooth_loss == std::numeric_limits<double>::max()) {
+            smooth_loss = loss;
+        } else {
+            smooth_loss = smooth_factor * loss + (1.0 - smooth_factor) * smooth_loss;
+        }
+
+        loss_history.push_back(loss);
+        double abs_improve = best_loss - loss;
+        double rel_improve = abs_improve / std::max(best_loss, 1e-8);
+
+        bool significant = (abs_improve > min_delta) && (rel_improve > 1e-5);
+
+        bool improving_trend = false;
+        if ((int)loss_history.size() >= lookback_window) {
+            double recent_avg = 0.0, older_avg = 0.0;
+            int half = lookback_window / 2;
+            for (int i = 0; i < half; i++) {
+                recent_avg += loss_history[loss_history.size() - 1 - i];
+                older_avg += loss_history[loss_history.size() - half - 1 - i];
+            }
+            recent_avg /= half;
+            older_avg /= half;
+            improving_trend = (older_avg - recent_avg) > (min_delta * 0.5);
+        }
+
+        if (significant) {
+            best_loss = loss;
+            wait_count = 0;
+            if (restore_best) save_best_weights(d_w1, d_b1, d_w2, d_b2, d_w3, d_b3, d_w4, d_b4);
+            // 根据相对改进动态调整耐心
+            if (rel_improve > 0.01) {
+                patience = std::min(initial_patience * 2, 300);
+            } else {
+                patience = initial_patience;
+            }
+            std::cout << "[INFO] New best loss: " << loss 
+                      << " (abs_improve=" << abs_improve 
+                      << ", rel_improve=" << rel_improve*100 << "%)" << std::endl;
+            return false;
+        } 
+        else if (loss < best_loss) {
+            // 轻微改进
+            wait_count++;
+            if (improving_trend) {
+                return wait_count >= static_cast<int>(patience * 1.2);
+            } else {
+                return wait_count >= patience;
+            }
+        } 
+        else {
+            // 无改进或变差
+            wait_count++;
+            if (current_lr < LEARNING_RATE * 0.01) {
+                // 学习率非常小，耐心减半
+                return wait_count >= patience / 2;
+            }
+            if (loss > best_loss * 1.1 && wait_count > patience / 3) {
+                std::cout << "[INFO] Loss deteriorated >10%, early stop." << std::endl;
+                return true;
+            }
+            return wait_count >= patience;
+        }
+    }
+
+    void save_best_weights(double* d_w1, double* d_b1, double* d_w2, double* d_b2,
+                           double* d_w3, double* d_b3, double* d_w4, double* d_b4) 
+    {
+        hipMemcpy(best_w1.data(), d_w1, INPUT_DIM * HIDDEN_DIM1 * sizeof(double), hipMemcpyDeviceToHost);
+        hipMemcpy(best_b1.data(), d_b1, HIDDEN_DIM1 * sizeof(double), hipMemcpyDeviceToHost);
+        hipMemcpy(best_w2.data(), d_w2, HIDDEN_DIM1 * HIDDEN_DIM2 * sizeof(double), hipMemcpyDeviceToHost);
+        hipMemcpy(best_b2.data(), d_b2, HIDDEN_DIM2 * sizeof(double), hipMemcpyDeviceToHost);
+        hipMemcpy(best_w3.data(), d_w3, HIDDEN_DIM2 * HIDDEN_DIM3 * sizeof(double), hipMemcpyDeviceToHost);
+        hipMemcpy(best_b3.data(), d_b3, HIDDEN_DIM3 * sizeof(double), hipMemcpyDeviceToHost);
+        hipMemcpy(best_w4.data(), d_w4, HIDDEN_DIM3 * OUTPUT_DIM * sizeof(double), hipMemcpyDeviceToHost);
+        hipMemcpy(best_b4.data(), d_b4, OUTPUT_DIM * sizeof(double), hipMemcpyDeviceToHost);
+    }
+
+    void restore_best_weights(double* d_w1, double* d_b1, double* d_w2, double* d_b2,
+                              double* d_w3, double* d_b3, double* d_w4, double* d_b4) 
+    {
+        if (!restore_best) return;
+        hipMemcpy(d_w1, best_w1.data(), INPUT_DIM * HIDDEN_DIM1 * sizeof(double), hipMemcpyHostToDevice);
+        hipMemcpy(d_b1, best_b1.data(), HIDDEN_DIM1 * sizeof(double), hipMemcpyHostToDevice);
+        hipMemcpy(d_w2, best_w2.data(), HIDDEN_DIM1 * HIDDEN_DIM2 * sizeof(double), hipMemcpyHostToDevice);
+        hipMemcpy(d_b2, best_b2.data(), HIDDEN_DIM2 * sizeof(double), hipMemcpyHostToDevice);
+        hipMemcpy(d_w3, best_w3.data(), HIDDEN_DIM2 * HIDDEN_DIM3 * sizeof(double), hipMemcpyHostToDevice);
+        hipMemcpy(d_b3, best_b3.data(), HIDDEN_DIM3 * sizeof(double), hipMemcpyHostToDevice);
+        hipMemcpy(d_w4, best_w4.data(), HIDDEN_DIM3 * OUTPUT_DIM * sizeof(double), hipMemcpyHostToDevice);
+        hipMemcpy(d_b4, best_b4.data(), OUTPUT_DIM * sizeof(double), hipMemcpyHostToDevice);
+        std::cout << "[INFO] Restored best model weights (loss=" << best_loss << ")" << std::endl;
+    }
+
+    void print_statistics() const {
+        std::cout << "[INFO] EarlyStopping Stats:" << std::endl;
+        std::cout << "  Best loss: " << best_loss << std::endl;
+        std::cout << "  Smooth loss: " << smooth_loss << std::endl;
+        std::cout << "  Wait count: " << wait_count << "/" << patience << std::endl;
+        if (loss_history.size() > 5) {
+            double trend = loss_history.back() - loss_history[loss_history.size() - 6];
+            std::cout << "  Recent 5-epoch trend: " << trend << std::endl;
+        }
+    }
+};
+
+// ============================ 主函数 ============================
 
 int main() {
     // 强制使用 GPU 设备 0
@@ -409,34 +556,40 @@ int main() {
 
     // AdamW 的超参数
     double beta1    = 0.9, beta2 = 0.999, eps = 1e-8;
-    double best_loss = 1e6;
-    int patience    = 0;
-    const int max_patience = 150;
 
-    // 为了在 Host 端计算 MSE，我们准备一个 Host 缓冲区来拷贝 d_output
+    // Host 端计算 MSE 用缓冲区
     double* h_pred_batch = new double[BATCH_SIZE];
     double* h_true_batch = new double[BATCH_SIZE];
 
-    // 训练循环
-    for (int epoch = 0; epoch < EPOCHS; ++epoch) {
+    // ========================== 初始化早停机制 ==========================
+    EnhancedEarlyStopping early_stopping(
+        150,      // patience
+        1e-6,     // min_delta
+        0.1,      // smooth_factor
+        10,       // lookback_window
+        true      // restore_best
+    );
+    std::cout << "[INFO] Enhanced EarlyStopping initialized" << std::endl;
+
+    // ========================== 训练循环 ==========================
+    auto training_start = std::chrono::high_resolution_clock::now();
+
+    for (int epoch = 0; epoch < EPOCHS; epoch++) {
         auto start_time = std::chrono::high_resolution_clock::now();
         double total_loss = 0.0;
         int num_batches = (train_size + batch_samples - 1) / batch_samples;
-
-        // 学习率调度
         double current_lr = cosine_annealing_warm_restart(LEARNING_RATE, epoch, EPOCHS);
 
         for (int batch_start = 0; batch_start < train_size; batch_start += batch_samples) {
             int current_batch_size = std::min(batch_samples, train_size - batch_start);
 
-            // 拷贝这一批的 X 和 y 到 GPU
+            // 复制此批次的 X, y 到 GPU
             hipMemcpy(d_X, X_train.data() + batch_start * INPUT_DIM,
                      current_batch_size * INPUT_DIM * sizeof(double), hipMemcpyHostToDevice);
             hipMemcpy(d_y, y_train.data() + batch_start,
                      current_batch_size * sizeof(double), hipMemcpyHostToDevice);
 
-            // ================= 前向传播 =================
-
+            // ========== 前向传播 ==========
             dim3 block(16, 16);
             dim3 grid_layer1((HIDDEN_DIM1 + block.x - 1) / block.x,
                              (current_batch_size + block.y - 1) / block.y);
@@ -447,54 +600,37 @@ int main() {
             dim3 grid_output((OUTPUT_DIM + block.x - 1) / block.x,
                              (current_batch_size + block.y - 1) / block.y);
 
-            // Layer1: h1 = X @ W1  => (current_batch_size×INPUT_DIM) × (INPUT_DIM×HIDDEN_DIM1) = (current_batch_size×HIDDEN_DIM1)
-            matmul_optimized<<<grid_layer1, block>>>(
-                d_X, d_w1, d_h1,
-                current_batch_size, HIDDEN_DIM1, INPUT_DIM
-            );
-            // + b1
+            // Layer1: h1 = X @ W1
+            matmul_optimized<<<grid_layer1, block>>>(d_X, d_w1, d_h1,
+                                                     current_batch_size, HIDDEN_DIM1, INPUT_DIM);
             add_bias<<< (current_batch_size * HIDDEN_DIM1 + 255)/256, 256 >>>(
-                d_h1, d_b1, current_batch_size, HIDDEN_DIM1
-            );
-            // LeakyReLU
+                d_h1, d_b1, current_batch_size, HIDDEN_DIM1);
             leaky_relu_forward<<< (current_batch_size * HIDDEN_DIM1 + 255)/256, 256 >>>(
-                d_h1, d_a1, current_batch_size * HIDDEN_DIM1, 0.02
-            );
+                d_h1, d_a1, current_batch_size * HIDDEN_DIM1, 0.02);
 
-            // Layer2: h2 = a1 @ W2 => (current_batch_size×HIDDEN_DIM1) × (HIDDEN_DIM1×HIDDEN_DIM2) = (current_batch_size×HIDDEN_DIM2)
-            matmul_optimized<<<grid_layer2, block>>>(
-                d_a1, d_w2, d_h2,
-                current_batch_size, HIDDEN_DIM2, HIDDEN_DIM1
-            );
+            // Layer2: h2 = a1 @ W2
+            matmul_optimized<<<grid_layer2, block>>>(d_a1, d_w2, d_h2,
+                                                     current_batch_size, HIDDEN_DIM2, HIDDEN_DIM1);
             add_bias<<< (current_batch_size * HIDDEN_DIM2 + 255)/256, 256 >>>(
-                d_h2, d_b2, current_batch_size, HIDDEN_DIM2
-            );
+                d_h2, d_b2, current_batch_size, HIDDEN_DIM2);
             leaky_relu_forward<<< (current_batch_size * HIDDEN_DIM2 + 255)/256, 256 >>>(
-                d_h2, d_a2, current_batch_size * HIDDEN_DIM2, 0.02
-            );
+                d_h2, d_a2, current_batch_size * HIDDEN_DIM2, 0.02);
 
-            // Layer3: h3 = a2 @ W3 => (current_batch_size×HIDDEN_DIM2) × (HIDDEN_DIM2×HIDDEN_DIM3) = (current_batch_size×HIDDEN_DIM3)
-            matmul_optimized<<<grid_layer3, block>>>(
-                d_a2, d_w3, d_h3,
-                current_batch_size, HIDDEN_DIM3, HIDDEN_DIM2
-            );
+            // Layer3: h3 = a2 @ W3
+            matmul_optimized<<<grid_layer3, block>>>(d_a2, d_w3, d_h3,
+                                                     current_batch_size, HIDDEN_DIM3, HIDDEN_DIM2);
             add_bias<<< (current_batch_size * HIDDEN_DIM3 + 255)/256, 256 >>>(
-                d_h3, d_b3, current_batch_size, HIDDEN_DIM3
-            );
+                d_h3, d_b3, current_batch_size, HIDDEN_DIM3);
             leaky_relu_forward<<< (current_batch_size * HIDDEN_DIM3 + 255)/256, 256 >>>(
-                d_h3, d_a3, current_batch_size * HIDDEN_DIM3, 0.02
-            );
+                d_h3, d_a3, current_batch_size * HIDDEN_DIM3, 0.02);
 
-            // Output: out = a3 @ W4 + b4 => (current_batch_size×HIDDEN_DIM3) × (HIDDEN_DIM3×OUTPUT_DIM) = (current_batch_size×OUTPUT_DIM)
-            matmul_optimized<<<grid_output, block>>>(
-                d_a3, d_w4, d_output,
-                current_batch_size, OUTPUT_DIM, HIDDEN_DIM3
-            );
+            // Output: out = a3 @ W4 + b4
+            matmul_optimized<<<grid_output, block>>>(d_a3, d_w4, d_output,
+                                                     current_batch_size, OUTPUT_DIM, HIDDEN_DIM3);
             add_bias<<< (current_batch_size * OUTPUT_DIM + 255)/256, 256 >>>(
-                d_output, d_b4, current_batch_size, OUTPUT_DIM
-            );
+                d_output, d_b4, current_batch_size, OUTPUT_DIM);
 
-            // ============== 在 Host 端计算 MSE ==============
+            // ========== Host 端计算 MSE ==========
             hipMemcpy(h_pred_batch, d_output, current_batch_size * sizeof(double), hipMemcpyDeviceToHost);
             for (int i = 0; i < current_batch_size; i++) {
                 h_true_batch[i] = y_train[batch_start + i];
@@ -507,157 +643,105 @@ int main() {
             batch_loss /= current_batch_size;
             total_loss += batch_loss;
 
-            // ============== 反向传播 ==============
-
-            // 1. 输出层梯度 dL/dout
+            // ========== 反向传播 ==========
+            // 1. 输出层梯度
             compute_output_grad<<< (current_batch_size + 255)/256, 256 >>>(
-                d_output, d_y, d_grad_output, current_batch_size
-            );
+                d_output, d_y, d_grad_output, current_batch_size);
 
-            // 2. 第4 层（输出层）梯度计算
-            dim3 block_bw(16, 16);
-
-            // 2.1 转置 a3 --> temp1  (a3 为 current_batch_size×HIDDEN_DIM3) 转成 (HIDDEN_DIM3×current_batch_size)
+            // 2. dW4 = a3^T @ d_grad_output
             transpose_matrix<<< (current_batch_size * HIDDEN_DIM3 + 255)/256, 256 >>>(
-                d_a3, d_temp1, current_batch_size, HIDDEN_DIM3
-            );
-            // dW4 = temp1(HIDDEN_DIM3×current_batch_size) @ d_grad_output(current_batch_size×OUTPUT_DIM)
-            //      => (HIDDEN_DIM3×OUTPUT_DIM)
-            int gx4 = (HIDDEN_DIM3 + block_bw.x - 1) / block_bw.x;
-            int gy4 = (OUTPUT_DIM  + block_bw.y - 1) / block_bw.y;
-            dim3 grid4(gx4, gy4);
-            matmul_optimized<<< grid4, block_bw >>>(
-                d_temp1, d_grad_output, d_grad_w4,
-                HIDDEN_DIM3, OUTPUT_DIM, current_batch_size
-            );
+                d_a3, d_temp1, current_batch_size, HIDDEN_DIM3);
+            dim3 grid4((OUTPUT_DIM + 15)/16, (HIDDEN_DIM3 + 15)/16);
+            dim3 block4(16, 16);
+            matmul_optimized<<<grid4, block4>>>(d_temp1, d_grad_output, d_grad_w4,
+                                                 HIDDEN_DIM3, OUTPUT_DIM, current_batch_size);
 
-            // 2.2 db4 = sum(d_grad_output, axis=0)
+            // 2.1 db4
             compute_bias_grad<<< (OUTPUT_DIM + 255)/256, 256 >>>(
-                d_grad_output, d_grad_b4, current_batch_size, OUTPUT_DIM
-            );
+                d_grad_output, d_grad_b4, current_batch_size, OUTPUT_DIM);
 
             // 3. grad_h3 = d_grad_output @ W4^T
-            //    d_grad_output: (current_batch_size×OUTPUT_DIM)，W4^T: (OUTPUT_DIM×HIDDEN_DIM3)
             transpose_matrix<<< (HIDDEN_DIM3 * OUTPUT_DIM + 255)/256, 256 >>>(
-                d_w4, d_temp2, HIDDEN_DIM3, OUTPUT_DIM
-            );
-            int gx_h3 = (current_batch_size + block_bw.x - 1) / block_bw.x;
-            int gy_h3 = (HIDDEN_DIM3        + block_bw.y - 1) / block_bw.y;
-            dim3 grid_h3(gx_h3, gy_h3);
-            matmul_optimized<<< grid_h3, block_bw >>>(
-                d_grad_output, d_temp2, d_grad_h3,
-                current_batch_size, HIDDEN_DIM3, OUTPUT_DIM
-            );
+                d_w4, d_temp2, HIDDEN_DIM3, OUTPUT_DIM);
+            dim3 grid_h3((HIDDEN_DIM3 + 15)/16, (current_batch_size + 15)/16);
+            dim3 block_h3(16, 16);
+            matmul_optimized<<<grid_h3, block_h3>>>(d_grad_output, d_temp2, d_grad_h3,
+                                                    current_batch_size, HIDDEN_DIM3, OUTPUT_DIM);
 
             // 4. LeakyReLU 反向 (第3层)
             leaky_relu_backward<<< (current_batch_size * HIDDEN_DIM3 + 255)/256, 256 >>>(
-                d_grad_h3, d_h3, current_batch_size * HIDDEN_DIM3, 0.02
-            );
+                d_grad_h3, d_h3, current_batch_size * HIDDEN_DIM3, 0.02);
 
             // 5. dW3 = a2^T @ d_grad_h3
-            //    a2^T: (HIDDEN_DIM2×current_batch_size), d_grad_h3: (current_batch_size×HIDDEN_DIM3)
             transpose_matrix<<< (current_batch_size * HIDDEN_DIM2 + 255)/256, 256 >>>(
-                d_a2, d_temp1, current_batch_size, HIDDEN_DIM2
-            );
-            int gx_w3 = (HIDDEN_DIM2 + block_bw.x - 1) / block_bw.x;
-            int gy_w3 = (HIDDEN_DIM3 + block_bw.y - 1) / block_bw.y;
-            dim3 grid_w3(gx_w3, gy_w3);
-            matmul_optimized<<< grid_w3, block_bw >>>(
-                d_temp1, d_grad_h3, d_grad_w3,
-                HIDDEN_DIM2, HIDDEN_DIM3, current_batch_size
-            );
+                d_a2, d_temp1, current_batch_size, HIDDEN_DIM2);
+            dim3 grid_w3((HIDDEN_DIM3 + 15)/16, (HIDDEN_DIM2 + 15)/16);
+            dim3 block_w3(16, 16);
+            matmul_optimized<<<grid_w3, block_w3>>>(d_temp1, d_grad_h3, d_grad_w3,
+                                                    HIDDEN_DIM2, HIDDEN_DIM3, current_batch_size);
 
-            // 5.1 db3 = sum(d_grad_h3, axis=0)
+            // 5.1 db3
             compute_bias_grad<<< (HIDDEN_DIM3 + 255)/256, 256 >>>(
-                d_grad_h3, d_grad_b3, current_batch_size, HIDDEN_DIM3
-            );
+                d_grad_h3, d_grad_b3, current_batch_size, HIDDEN_DIM3);
 
             // 6. grad_h2 = d_grad_h3 @ W3^T
-            //    d_grad_h3: (current_batch_size×HIDDEN_DIM3), W3^T: (HIDDEN_DIM3×HIDDEN_DIM2)
             transpose_matrix<<< (HIDDEN_DIM2 * HIDDEN_DIM3 + 255)/256, 256 >>>(
-                d_w3, d_temp2, HIDDEN_DIM2, HIDDEN_DIM3
-            );
-            int gx_h2 = (current_batch_size + block_bw.x - 1) / block_bw.x;
-            int gy_h2 = (HIDDEN_DIM2        + block_bw.y - 1) / block_bw.y;
-            dim3 grid_h2(gx_h2, gy_h2);
-            matmul_optimized<<< grid_h2, block_bw >>>(
-                d_grad_h3, d_temp2, d_grad_h2,
-                current_batch_size, HIDDEN_DIM2, HIDDEN_DIM3
-            );
+                d_w3, d_temp2, HIDDEN_DIM2, HIDDEN_DIM3);
+            dim3 grid_h2((HIDDEN_DIM2 + 15)/16, (current_batch_size + 15)/16);
+            dim3 block_h2(16, 16);
+            matmul_optimized<<<grid_h2, block_h2>>>(d_grad_h3, d_temp2, d_grad_h2,
+                                                    current_batch_size, HIDDEN_DIM2, HIDDEN_DIM3);
 
             // 7. LeakyReLU 反向 (第2层)
             leaky_relu_backward<<< (current_batch_size * HIDDEN_DIM2 + 255)/256, 256 >>>(
-                d_grad_h2, d_h2, current_batch_size * HIDDEN_DIM2, 0.02
-            );
+                d_grad_h2, d_h2, current_batch_size * HIDDEN_DIM2, 0.02);
 
             // 8. dW2 = a1^T @ d_grad_h2
-            //    a1^T: (HIDDEN_DIM1×current_batch_size), d_grad_h2: (current_batch_size×HIDDEN_DIM2)
             transpose_matrix<<< (current_batch_size * HIDDEN_DIM1 + 255)/256, 256 >>>(
-                d_a1, d_temp1, current_batch_size, HIDDEN_DIM1
-            );
-            int gx_w2 = (HIDDEN_DIM1 + block_bw.x - 1) / block_bw.x;
-            int gy_w2 = (HIDDEN_DIM2 + block_bw.y - 1) / block_bw.y;
-            dim3 grid_w2(gx_w2, gy_w2);
-            matmul_optimized<<< grid_w2, block_bw >>>(
-                d_temp1, d_grad_h2, d_grad_w2,
-                HIDDEN_DIM1, HIDDEN_DIM2, current_batch_size
-            );
+                d_a1, d_temp1, current_batch_size, HIDDEN_DIM1);
+            dim3 grid_w2((HIDDEN_DIM2 + 15)/16, (HIDDEN_DIM1 + 15)/16);
+            dim3 block_w2(16, 16);
+            matmul_optimized<<<grid_w2, block_w2>>>(d_temp1, d_grad_h2, d_grad_w2,
+                                                    HIDDEN_DIM1, HIDDEN_DIM2, current_batch_size);
 
-            // 8.1 db2 = sum(d_grad_h2, axis=0)
+            // 8.1 db2
             compute_bias_grad<<< (HIDDEN_DIM2 + 255)/256, 256 >>>(
-                d_grad_h2, d_grad_b2, current_batch_size, HIDDEN_DIM2
-            );
+                d_grad_h2, d_grad_b2, current_batch_size, HIDDEN_DIM2);
 
             // 9. grad_h1 = d_grad_h2 @ W2^T
-            //    d_grad_h2: (current_batch_size×HIDDEN_DIM2), W2^T: (HIDDEN_DIM2×HIDDEN_DIM1)
             transpose_matrix<<< (HIDDEN_DIM1 * HIDDEN_DIM2 + 255)/256, 256 >>>(
-                d_w2, d_temp2, HIDDEN_DIM1, HIDDEN_DIM2
-            );
-            int gx_h1 = (current_batch_size + block_bw.x - 1) / block_bw.x;
-            int gy_h1 = (HIDDEN_DIM1        + block_bw.y - 1) / block_bw.y;
-            dim3 grid_h1(gx_h1, gy_h1);
-            matmul_optimized<<< grid_h1, block_bw >>>(
-                d_grad_h2, d_temp2, d_grad_h1,
-                current_batch_size, HIDDEN_DIM1, HIDDEN_DIM2
-            );
+                d_w2, d_temp2, HIDDEN_DIM1, HIDDEN_DIM2);
+            dim3 grid_h1((HIDDEN_DIM1 + 15)/16, (current_batch_size + 15)/16);
+            dim3 block_h1(16, 16);
+            matmul_optimized<<<grid_h1, block_h1>>>(d_grad_h2, d_temp2, d_grad_h1,
+                                                    current_batch_size, HIDDEN_DIM1, HIDDEN_DIM2);
 
             // 10. LeakyReLU 反向 (第1层)
             leaky_relu_backward<<< (current_batch_size * HIDDEN_DIM1 + 255)/256, 256 >>>(
-                d_grad_h1, d_h1, current_batch_size * HIDDEN_DIM1, 0.02
-            );
+                d_grad_h1, d_h1, current_batch_size * HIDDEN_DIM1, 0.02);
 
             // 11. dW1 = X^T @ d_grad_h1
-            //     X^T: (INPUT_DIM×current_batch_size), d_grad_h1: (current_batch_size×HIDDEN_DIM1)
             transpose_matrix<<< (current_batch_size * INPUT_DIM + 255)/256, 256 >>>(
-                d_X, d_temp1, current_batch_size, INPUT_DIM
-            );
-            int gx_w1 = (INPUT_DIM    + block_bw.x - 1) / block_bw.x;
-            int gy_w1 = (HIDDEN_DIM1  + block_bw.y - 1) / block_bw.y;
-            dim3 grid_w1(gx_w1, gy_w1);
-            matmul_optimized<<< grid_w1, block_bw >>>(
-                d_temp1, d_grad_h1, d_grad_w1,
-                INPUT_DIM, HIDDEN_DIM1, current_batch_size
-            );
+                d_X, d_temp1, current_batch_size, INPUT_DIM);
+            dim3 grid_w1((HIDDEN_DIM1 + 15)/16, (INPUT_DIM + 15)/16);
+            dim3 block_w1(16, 16);
+            matmul_optimized<<<grid_w1, block_w1>>>(d_temp1, d_grad_h1, d_grad_w1,
+                                                    INPUT_DIM, HIDDEN_DIM1, current_batch_size);
 
-            // 11.1 db1 = sum(d_grad_h1, axis=0)
+            // 11.1 db1
             compute_bias_grad<<< (HIDDEN_DIM1 + 255)/256, 256 >>>(
-                d_grad_h1, d_grad_b1, current_batch_size, HIDDEN_DIM1
-            );
+                d_grad_h1, d_grad_b1, current_batch_size, HIDDEN_DIM1);
 
             // ============== 梯度裁剪 ==============
             double grad_clip_norm = 5.0;
             clip_gradients<<< (INPUT_DIM * HIDDEN_DIM1 + 255)/256, 256 >>>(
-                d_grad_w1,   INPUT_DIM * HIDDEN_DIM1,   grad_clip_norm
-            );
+                d_grad_w1,   INPUT_DIM * HIDDEN_DIM1,   grad_clip_norm);
             clip_gradients<<< (HIDDEN_DIM1 * HIDDEN_DIM2 + 255)/256, 256 >>>(
-                d_grad_w2,   HIDDEN_DIM1 * HIDDEN_DIM2, grad_clip_norm
-            );
+                d_grad_w2,   HIDDEN_DIM1 * HIDDEN_DIM2, grad_clip_norm);
             clip_gradients<<< (HIDDEN_DIM2 * HIDDEN_DIM3 + 255)/256, 256 >>>(
-                d_grad_w3,   HIDDEN_DIM2 * HIDDEN_DIM3, grad_clip_norm
-            );
+                d_grad_w3,   HIDDEN_DIM2 * HIDDEN_DIM3, grad_clip_norm);
             clip_gradients<<< (HIDDEN_DIM3 * OUTPUT_DIM + 255)/256, 256 >>>(
-                d_grad_w4,   HIDDEN_DIM3 * OUTPUT_DIM,   grad_clip_norm
-            );
+                d_grad_w4,   HIDDEN_DIM3 * OUTPUT_DIM,   grad_clip_norm);
 
             // ============== 优化器更新 ==============
 
@@ -704,18 +788,10 @@ int main() {
             bias_sgd_update<<< (OUTPUT_DIM + 255)/256, 256 >>>(
                 d_b4, d_grad_b4, current_lr, OUTPUT_DIM
             );
+
         } // end for batch
 
         total_loss /= num_batches;
-
-        // 早停检测
-        if (total_loss < best_loss - 1e-6) {
-            best_loss = total_loss;
-            patience   = 0;
-        } else {
-            patience++;
-        }
-
         auto end_time  = std::chrono::high_resolution_clock::now();
         auto duration  = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
@@ -724,20 +800,29 @@ int main() {
                       << std::fixed << std::setprecision(6) << total_loss
                       << " | LR: " << std::scientific << current_lr
                       << " | Time: " << duration.count() << "ms"
-                      << " | Patience: " << patience << std::endl;
+                      << std::endl;
         }
 
-        if (patience >= max_patience) {
+        // 调用增强版早停检测
+        if (early_stopping.should_stop(total_loss, epoch, current_lr,
+                                      d_w1, d_b1, d_w2, d_b2, d_w3, d_b3, d_w4, d_b4)) 
+        {
             std::cout << "[INFO] Early stopping triggered at epoch " << epoch + 1 << std::endl;
+            early_stopping.print_statistics();
             break;
         }
+
         if ((epoch + 1) % 200 == 0) {
-            beta1 = std::max(0.85, beta1 * 0.98);
-            beta2 = std::max(0.99, beta2 * 0.999);
+            early_stopping.print_statistics();
         }
     } // end for epoch
 
-    std::cout << "[INFO] Training completed. Best loss: " << best_loss << std::endl;
+    // 恢复最佳权重
+    early_stopping.restore_best_weights(d_w1, d_b1, d_w2, d_b2, d_w3, d_b3, d_w4, d_b4);
+
+    auto training_end = std::chrono::high_resolution_clock::now();
+    auto training_duration = std::chrono::duration_cast<std::chrono::seconds>(training_end - training_start);
+    std::cout << "\n[INFO] Training completed in " << training_duration.count() << " seconds" << std::endl;
 
     // ========================== 测试阶段 ==========================
     // 拷贝最终参数到 Host
